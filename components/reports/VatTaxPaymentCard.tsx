@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import { Download, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -17,6 +17,13 @@ import type { VatDeclarationRutor } from '@/types'
 
 type PaymentFormat = 'bg_lb' | 'pain001'
 
+interface TaxPaymentPreview {
+  paymentDate: string
+  agi: { amount: number } | null
+  vat: { amount: number } | null
+  totalAmount: number
+}
+
 export function VatTaxPaymentCard({
   queryString,
   rutor,
@@ -31,7 +38,21 @@ export function VatTaxPaymentCard({
   const { toast } = useToast()
   const [format, setFormat] = useState<PaymentFormat>(defaultFormat)
   const [downloading, setDownloading] = useState(false)
-  const amount = buildFiledAmounts(rutor).net
+  const [preview, setPreview] = useState<TaxPaymentPreview | null>(null)
+  const vatAmount = preview?.vat?.amount ?? buildFiledAmounts(rutor).net
+  const agiAmount = preview?.agi?.amount ?? 0
+  const amount = preview?.totalAmount ?? vatAmount
+
+  useEffect(() => {
+    let active = true
+    fetch(`/api/skatteverket/vat-payments/payment-file?${queryString}&preview=true`)
+      .then(async (response) => response.ok ? response.json() as Promise<{ data: TaxPaymentPreview }> : null)
+      .then((body) => {
+        if (active && body) setPreview(body.data)
+      })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [queryString])
 
   const handleDownload = useCallback(async () => {
     if (downloading) return
@@ -64,14 +85,27 @@ export function VatTaxPaymentCard({
 
   return (
     <DetailSection
-      kicker={t('vat_tax_title')}
+      kicker={t('tax_title')}
       help={<HelpPopover>{t('vat_tax_ocr_note')}</HelpPopover>}
     >
       <div>
+        <DefRow label={t('tax_label_vat')}>
+          <span className="tabular-nums">{formatCurrency(vatAmount)}</span>
+        </DefRow>
+        {agiAmount > 0 && (
+          <DefRow label={t('tax_label_agi')}>
+            <span className="tabular-nums">{formatCurrency(agiAmount)}</span>
+          </DefRow>
+        )}
         <DefRow label={t('tax_label_total')}>
           <span className="font-medium tabular-nums">{formatCurrency(amount)}</span>
         </DefRow>
         <DefRow label={t('tax_recipient')}>{t('tax_recipient_value')}</DefRow>
+        {preview?.paymentDate && (
+          <DefRow label={t('tax_due_date')}>
+            <span className="tabular-nums">{preview.paymentDate}</span>
+          </DefRow>
+        )}
         <DefRow label={t('format_label')}>
           <SettingsSelect
             aria-label={t('format_label')}

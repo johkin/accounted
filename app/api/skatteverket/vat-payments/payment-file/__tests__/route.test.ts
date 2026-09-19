@@ -8,6 +8,7 @@ const requireWriteMock = vi.fn()
 const calculateVatDeclarationMock = vi.fn()
 const generatePain001Mock = vi.fn()
 const resolveBatchDebtorMock = vi.fn()
+const resolveCombinedTaxPaymentMock = vi.fn()
 
 vi.mock('@/lib/auth/require-auth', () => ({
   requireAuth: (...args: unknown[]) => requireAuthMock(...args),
@@ -33,6 +34,10 @@ vi.mock('@/lib/skatteverket/skattekonto-ocr', () => ({
   SKATTEKONTO_BANKGIRO: '5050-1055',
 }))
 vi.mock('@/lib/branding/service', () => ({ getBranding: () => ({ appName: 'Accounted' }) }))
+vi.mock('@/lib/skatteverket/combined-tax-payment', () => ({
+  vatTaxPaymentDate: vi.fn().mockReturnValue('2026-08-17'),
+  resolveCombinedTaxPayment: (...args: unknown[]) => resolveCombinedTaxPaymentMock(...args),
+}))
 
 import { GET } from '../route'
 
@@ -64,6 +69,12 @@ describe('GET /api/skatteverket/vat-payments/payment-file', () => {
         city: 'Stockholm',
       },
     })
+    resolveCombinedTaxPaymentMock.mockResolvedValue({
+      paymentDate: '2026-08-17',
+      agi: null,
+      vat: { periodType: 'quarterly', year: 2026, period: 2, amount: 10_000 },
+      totalAmount: 10_000,
+    })
   })
 
   it('returns 401 when not authenticated', async () => {
@@ -85,12 +96,14 @@ describe('GET /api/skatteverket/vat-payments/payment-file', () => {
   })
 
   it('does not create a payment for VAT to be refunded', async () => {
-    calculateVatDeclarationMock.mockResolvedValue({
-      rutor: { ruta10: 2_500, ruta48: 12_500, ruta49: -10_000 },
+    resolveCombinedTaxPaymentMock.mockResolvedValue({
+      paymentDate: '2026-08-17', agi: null, vat: null, totalAmount: 0,
     })
+    enqueue({ data: { name: 'Test AB', org_number: '5566778899', entity_type: 'aktiebolag' } })
+    enqueue({ data: { bankgiro: '123-4567' } })
     const response = await GET(request(), createMockRouteParams({}))
     expect(response.status).toBe(400)
-    expect(JSON.stringify(await response.json())).toContain('återfå')
+    expect(JSON.stringify(await response.json())).toContain('inget moms- eller AGI-belopp')
   })
 
   it('generates pain.001 from the filed whole-krona ruta 49 amount', async () => {
@@ -109,7 +122,7 @@ describe('GET /api/skatteverket/vat-payments/payment-file', () => {
 
     expect(response.status).toBe(200)
     expect(response.headers.get('Content-Type')).toBe('application/xml; charset=utf-8')
-    expect(response.headers.get('Content-Disposition')).toContain('pain001_moms_2026-Q2.xml')
+    expect(response.headers.get('Content-Disposition')).toContain('pain001_skatt_2026-08-17.xml')
     const [, payments] = generatePain001Mock.mock.calls[0]
     expect(payments[0]).toMatchObject({
       payee: { type: 'bankgiro', bankgiro: '50501055' },

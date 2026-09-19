@@ -1185,4 +1185,4 @@ Entries dated before 2026-08-01 were archived on 2026-09-13 to keep this file re
 
 [2026-09-18] Provider registers use encrypted snapshots, leased jobs and transactional source receipts: bounded cron workers resume after timeouts without replaying successful writes; payment candidates are planned across the whole job before linking (#2690).
 [2026-09-19] Provider imports never adopt parties by display name alone: use provider IDs or organization identity; unidentified invoice parties stay separate to avoid assigning invoices to another same-named entity (#2743).
-[2026-09-19] VAT payments reuse the existing Skattekonto payment-file generators and derive the amount from buildFiledAmounts(rutor).net: no tax-obligation table is added because the VAT filing is a ledger projection, and a second stored amount could drift from filed ruta 49. Refund and zero periods generate no payment.
+[2026-09-19] Skattekonto files are one deterministic payment per due date, combining unpaid AGI with positive filed VAT ruta 49. No obligation table is added: VAT remains a ledger projection and a second stored amount could drift. Refund and zero periods add nothing.

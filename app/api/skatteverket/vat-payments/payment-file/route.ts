@@ -7,20 +7,19 @@ import { resolveBatchDebtor } from '@/lib/payments/batch-service'
 import { resolveSkattekontoOcr, SKATTEKONTO_BANKGIRO } from '@/lib/skatteverket/skattekonto-ocr'
 import { validateBankgiroNumber } from '@/lib/bankgiro/luhn'
 import { getBranding } from '@/lib/branding/service'
-import { calculateVatDeclaration } from '@/lib/reports/vat-declaration'
-import { buildFiledAmounts } from '@/lib/reports/vat-manual-filing'
-import { getVatDeadlineForPeriod } from '@/lib/tax/deadline-config'
-import { adjustDeadlineToNextBankingDay } from '@/lib/tax/swedish-holidays'
-import { formatDateISO } from '@/lib/calendar/utils'
 import { parseEntityType, usesPersonnummerAsOrgNumber } from '@/lib/company/entity-type'
+import {
+  resolveCombinedTaxPayment,
+  vatTaxPaymentDate,
+  type CombinedTaxPaymentSettings,
+} from '@/lib/skatteverket/combined-tax-payment'
 import type { VatPeriodType } from '@/types'
 
 type PaymentFormat = 'bg_lb' | 'pain001'
 
 /**
- * Generate a payment file for the positive net amount in a VAT declaration.
- * The amount is derived from the same whole-krona filing projection as the
- * eSKD XML and PDF, so the bank instruction cannot disagree with ruta 49.
+ * Generate one Skattekonto payment for a VAT due date. The payment includes
+ * positive VAT and unpaid AGI when both declarations share that date.
  */
 export const GET = withRouteContext(
   'vat_tax_payment.payment_file',
@@ -46,28 +45,6 @@ export const GET = withRouteContext(
       return NextResponse.json({ error: 'Räkenskapsår saknas för helårsmoms.' }, { status: 400 })
     }
 
-    let amount: number
-    try {
-      const declaration = await calculateVatDeclaration(
-        supabase,
-        companyId,
-        periodType,
-        year,
-        period,
-        { fiscalPeriodId },
-      )
-      amount = buildFiledAmounts(declaration.rutor).net
-    } catch (err) {
-      return NextResponse.json({ error: getErrorMessage(err) }, { status: 400 })
-    }
-
-    if (amount <= 0) {
-      return NextResponse.json(
-        { error: amount < 0 ? 'Momsdeklarationen visar moms att återfå, inte att betala.' : 'Momsdeklarationen har inget belopp att betala.' },
-        { status: 400 },
-      )
-    }
-
     const [{ data: company }, { data: settings }] = await Promise.all([
       supabase
         .from('companies')
@@ -76,7 +53,7 @@ export const GET = withRouteContext(
         .single(),
       supabase
         .from('company_settings')
-        .select('bankgiro, fiscal_year_start_month, vat_has_eu_trade, vat_filing_method, vat_taxable_base_over_40m')
+        .select('bankgiro, moms_period, fiscal_year_start_month, vat_has_eu_trade, vat_filing_method, vat_taxable_base_over_40m, vat_registered')
         .eq('company_id', companyId)
         .single(),
     ])
@@ -84,8 +61,38 @@ export const GET = withRouteContext(
     if (!company?.org_number) {
       return NextResponse.json({ error: 'Organisationsnummer saknas för företaget.' }, { status: 400 })
     }
+    if (!settings) {
+      return NextResponse.json({ error: 'Skatteinställningar saknas för företaget.' }, { status: 400 })
+    }
 
     const entityType = parseEntityType(company.entity_type)
+    const taxSettings = settings as CombinedTaxPaymentSettings & { bankgiro: string | null }
+    const vatSource = { periodType, year, period, fiscalPeriodId }
+    const paymentDate = vatTaxPaymentDate(vatSource, entityType, taxSettings)
+    if (!paymentDate) {
+      return NextResponse.json({ error: 'Förfallodatum kunde inte beräknas från företagets skatteinställningar.' }, { status: 400 })
+    }
+    let combined
+    try {
+      combined = await resolveCombinedTaxPayment(
+        supabase,
+        companyId,
+        entityType,
+        taxSettings,
+        paymentDate,
+        vatSource,
+      )
+    } catch (err) {
+      return NextResponse.json({ error: getErrorMessage(err) }, { status: 400 })
+    }
+    if (params.get('preview') === 'true') {
+      return NextResponse.json({ data: combined })
+    }
+    const amount = combined.totalAmount
+    if (amount <= 0) {
+      return NextResponse.json({ error: 'Det finns inget moms- eller AGI-belopp att betala på förfallodagen.' }, { status: 400 })
+    }
+
     let ocr: string
     try {
       ocr = await resolveSkattekontoOcr(
@@ -98,20 +105,7 @@ export const GET = withRouteContext(
       return NextResponse.json({ error: getErrorMessage(err) }, { status: 400 })
     }
 
-    const deadline = getVatDeadlineForPeriod(periodType, year, period, {
-      entity_type: entityType,
-      fiscal_year_start_month: settings?.fiscal_year_start_month,
-      vat_has_eu_trade: settings?.vat_has_eu_trade,
-      vat_filing_method: settings?.vat_filing_method,
-      vat_taxable_base_over_40m: settings?.vat_taxable_base_over_40m,
-    })
-    if (!deadline) {
-      return NextResponse.json({ error: 'Förfallodatum kunde inte beräknas från företagets skatteinställningar.' }, { status: 400 })
-    }
-    const paymentDate = formatDateISO(
-      adjustDeadlineToNextBankingDay(new Date(deadline.year, deadline.month, deadline.day)),
-    )
-    const periodKey = deadline.period.replace(/[^0-9A-Za-z-]/g, '-')
+    const periodKey = `${periodType}-${year}-${period}`
 
     let fileContent: Buffer
     let filename: string
@@ -147,7 +141,7 @@ export const GET = withRouteContext(
             reference: { type: 'ocr', value: ocr },
           }],
           {
-            messageId: `${getBranding().appName.toUpperCase()}-MOMS-${company.org_number.replace(/\D/g, '')}-${periodKey}`,
+            messageId: `${getBranding().appName.toUpperCase()}-SKATT-${company.org_number.replace(/\D/g, '')}-${paymentDate}`,
             createdAt: new Date().toISOString(),
           },
         )
@@ -155,7 +149,7 @@ export const GET = withRouteContext(
       } catch (err) {
         return NextResponse.json({ error: getErrorMessage(err) }, { status: 400 })
       }
-      filename = `pain001_moms_${periodKey}.xml`
+      filename = `pain001_skatt_${paymentDate}.xml`
       contentType = 'application/xml; charset=utf-8'
     } else {
       if (!settings?.bankgiro) {
@@ -173,7 +167,7 @@ export const GET = withRouteContext(
             amount,
             receiverName: 'Skatteverket',
           },
-          { paymentDate, periodLabel: periodKey },
+          { paymentDate, periodLabel: paymentDate },
         )
         fileContent = Buffer.from(result.content, 'latin1')
         filename = result.filename
