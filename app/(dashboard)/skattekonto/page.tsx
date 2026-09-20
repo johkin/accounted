@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
-import { useTranslations } from 'next-intl'
+import { useLocale, useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -21,6 +21,7 @@ import {
   CHECKBOX_REVEAL_CLASS,
 } from '@/components/ui/dry-table'
 import { OpenInNewTab } from '@/components/ui/open-in-new-tab'
+import { SettingsSelect } from '@/components/settings/SettingsRows'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   Dialog,
@@ -55,6 +56,8 @@ import {
 import {
   AlertCircle,
   Copy,
+  Download,
+  Loader2,
   RefreshCw,
 } from 'lucide-react'
 import { useCapability } from '@/contexts/CompanyContext'
@@ -66,6 +69,12 @@ import type {
 } from '@/extensions/general/skatteverket/types'
 import type { SkattekontoBatchRowResult } from '@/types/skatteverket'
 import { getErrorMessage as getUserErrorMessage } from '@/lib/errors/get-error-message'
+import type { ErrorLocale } from '@/lib/errors/get-error-message'
+import { downloadFile } from '@/lib/browser/download-file'
+import { failureDescription } from '@/lib/browser/action-failure'
+import { roundOre } from '@/lib/money'
+
+type PaymentFormat = 'bg_lb' | 'pain001'
 
 const SkattekontoBookDialog = dynamic(
   () => import('@/components/skattekonto/SkattekontoBookDialog'),
@@ -102,9 +111,13 @@ interface MatchCandidate {
 export default function SkattekontoPage() {
   const { toast } = useToast()
   const t = useTranslations('skattekonto')
+  const locale = useLocale() as ErrorLocale
   const tStart = useTranslations('start_cards')
   const hasSkvCapability = useCapability(CAPABILITY.skatteverket)
   const [showPayment, setShowPayment] = useState(false)
+  const [paymentSelection, setPaymentSelection] = useState<StoredSkattekontoTransaction[] | null>(null)
+  const [paymentFormat, setPaymentFormat] = useState<PaymentFormat>('pain001')
+  const [downloadingPayment, setDownloadingPayment] = useState(false)
   const [saldo, setSaldo] = useState<SaldoEnvelope | null>(null)
   const [tx, setTx] = useState<TransaktionerEnvelope['data'] | null>(null)
   const [loading, setLoading] = useState(true)
@@ -603,7 +616,7 @@ export default function SkattekontoPage() {
     if (!due) return null
     const rows = upcoming.filter((r) => dueOf(r) === due)
     const amount = rows.reduce((sum, r) => sum + Number(r.belopp_skatteverket), 0)
-    return { due, count: rows.length, amount: Math.round(Math.abs(amount) * 100) / 100 }
+    return { due, count: rows.length, amount: Math.round(Math.abs(amount) * 100) / 100, rows }
   }, [tx])
 
   // Ignorable rows in rendered order (upcoming, overdue, then the unbooked
@@ -621,6 +634,26 @@ export default function SkattekontoPage() {
     const selectable = new Set(selectableIds)
     return new Set([...selectedIds].filter((id) => selectable.has(id)))
   }, [selectableIds, selectedIds])
+  const selectedRows = useMemo(() => {
+    const allRows = [...(tx?.upcoming ?? []), ...(tx?.overdue ?? []), ...(tx?.booked ?? [])]
+    return allRows.filter((row) => activeSelectedIds.has(row.id))
+  }, [activeSelectedIds, tx])
+  const selectedDueDates = new Set(
+    selectedRows.map((row) => row.forfallodatum ?? row.transaktionsdatum),
+  )
+  const selectedNet = selectedRows.reduce(
+    (sum, row) => sum + Number(row.belopp_skatteverket),
+    0,
+  )
+  const selectionCanBePaid =
+    selectedRows.length > 0 &&
+    selectedRows.every((row) => row.status === 'upcoming') &&
+    selectedDueDates.size === 1 &&
+    selectedNet < 0
+  const paymentSelectionHasMixedDates =
+    selectedRows.length > 0 &&
+    selectedRows.every((row) => row.status === 'upcoming') &&
+    selectedDueDates.size > 1
   const range = useRangeSelect({ visibleIds: selectableIds, selectedIds, setSelectedIds })
   const toggleSelect = useCallback(
     (id: string, extend?: boolean) => range.toggle(id, extend),
@@ -632,6 +665,47 @@ export default function SkattekontoPage() {
     nextCharge && saldoNow !== null && saldoNow < nextCharge.amount
       ? Math.round((nextCharge.amount - saldoNow) * 100) / 100
       : null
+  const rowsForPayment = paymentSelection ?? nextCharge?.rows ?? []
+  const paymentDue = rowsForPayment[0]
+    ? (rowsForPayment[0].forfallodatum ?? rowsForPayment[0].transaktionsdatum)
+    : null
+  const paymentCharge = roundOre(Math.abs(rowsForPayment.reduce(
+    (sum, row) => sum + Number(row.belopp_skatteverket),
+    0,
+  )))
+  const paymentAmount = saldoNow === null
+    ? paymentCharge
+    : Math.max(0, roundOre(paymentCharge - saldoNow))
+
+  const downloadPayment = async () => {
+    if (downloadingPayment || rowsForPayment.length === 0) return
+    setDownloadingPayment(true)
+    try {
+      const ids = rowsForPayment.map((row) => row.id).join(',')
+      const filename = paymentFormat === 'pain001'
+        ? `pain001_skatt_${paymentDue}.xml`
+        : `bg_lb_skatt_${paymentDue}.txt`
+      const result = await downloadFile({
+        url: `/api/skatteverket/tax-payments/payment-file?transaction_ids=${encodeURIComponent(ids)}&format=${paymentFormat}`,
+        filename,
+        locale,
+      })
+      if (!result.ok) {
+        toast({
+          title: t('payment_download_failed'),
+          description: failureDescription(result, {
+            timeout: t('payment_download_timeout'),
+            network: t('payment_download_network'),
+          }),
+          variant: 'destructive',
+        })
+        return
+      }
+      toast({ title: t('payment_downloaded') })
+    } finally {
+      setDownloadingPayment(false)
+    }
+  }
 
   const helpNode = (
     <HelpPopover>
@@ -832,7 +906,13 @@ export default function SkattekontoPage() {
                 bankgiro and OCR. */}
             {shortfall !== null && nextCharge ? (
               <AttnLine
-                action={{ label: t('attn_show_payment'), onClick: () => setShowPayment(true) }}
+                action={{
+                  label: t('attn_show_payment'),
+                  onClick: () => {
+                    setPaymentSelection(null)
+                    setShowPayment(true)
+                  },
+                }}
               >
                 {t('attn_shortfall', {
                   date: formatDateLong(nextCharge.due),
@@ -870,6 +950,20 @@ export default function SkattekontoPage() {
           <span className="whitespace-nowrap">
             {t('bulk_selected', { count: activeSelectedIds.size })}
           </span>
+          {selectionCanBePaid && (
+            <Button
+              size="sm"
+              onClick={() => {
+                setPaymentSelection(selectedRows)
+                setShowPayment(true)
+              }}
+            >
+              {t('bulk_payment_cta', { count: activeSelectedIds.size })}
+            </Button>
+          )}
+          {paymentSelectionHasMixedDates && (
+            <span className="text-muted-foreground">{t('bulk_payment_same_due_hint')}</span>
+          )}
           <Button size="sm" onClick={() => void ignoreSelected([...activeSelectedIds])}>
             {t('bulk_ignore_cta', { count: activeSelectedIds.size })}
           </Button>
@@ -959,17 +1053,23 @@ export default function SkattekontoPage() {
         onConfirm={confirmMatch}
       />
 
-      <Dialog open={showPayment} onOpenChange={setShowPayment}>
+      <Dialog
+        open={showPayment}
+        onOpenChange={(open) => {
+          setShowPayment(open)
+          if (!open) setPaymentSelection(null)
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="font-display text-lg tracking-tight">
               {t('payment_title')}
             </DialogTitle>
-            {nextCharge && (
+            {paymentDue && (
               <DialogDescription className="text-[13px] leading-relaxed">
                 {t('payment_description', {
-                  date: formatDateLong(nextCharge.due),
-                  charge: formatCurrency(nextCharge.amount),
+                  date: formatDateLong(paymentDue),
+                  charge: formatCurrency(paymentCharge),
                 })}
               </DialogDescription>
             )}
@@ -995,13 +1095,48 @@ export default function SkattekontoPage() {
                 )}
               </dd>
             </div>
-            {shortfall !== null && (
+            <div className="flex items-baseline justify-between gap-4">
+              <dt className="text-muted-foreground">{t('payment_selected_label')}</dt>
+              <dd className="tabular-nums">{formatCurrency(paymentCharge)}</dd>
+            </div>
+            {saldoNow !== null && (
               <div className="flex items-baseline justify-between gap-4">
-                <dt className="text-muted-foreground">{t('payment_shortfall_label')}</dt>
-                <dd className="font-medium tabular-nums">{formatCurrency(shortfall)}</dd>
+                <dt className="text-muted-foreground">{t('payment_balance_label')}</dt>
+                <dd className="tabular-nums">{formatCurrency(saldoNow)}</dd>
               </div>
             )}
+            <div className="flex items-baseline justify-between gap-4">
+              <dt className="text-muted-foreground">{t('payment_shortfall_label')}</dt>
+              <dd className="font-medium tabular-nums">{formatCurrency(paymentAmount)}</dd>
+            </div>
+            <div className="flex items-baseline justify-between gap-4">
+              <dt className="text-muted-foreground">{t('payment_format_label')}</dt>
+              <dd>
+                <SettingsSelect
+                  aria-label={t('payment_format_label')}
+                  value={paymentFormat}
+                  onChange={(event) => setPaymentFormat(event.target.value as PaymentFormat)}
+                  wrapperClassName="-my-1"
+                >
+                  <option value="pain001">ISO 20022 pain.001</option>
+                  <option value="bg_lb">Bankgirot LB</option>
+                </SettingsSelect>
+              </dd>
+            </div>
           </dl>
+          <DialogFooter>
+            <Button
+              onClick={() => void downloadPayment()}
+              disabled={downloadingPayment || paymentAmount <= 0}
+            >
+              {downloadingPayment ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="mr-2 h-4 w-4" />
+              )}
+              {t('payment_download_cta')}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
