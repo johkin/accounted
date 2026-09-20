@@ -1185,4 +1185,4 @@ Entries dated before 2026-08-01 were archived on 2026-09-13 to keep this file re
 
 [2026-09-18] Provider registers use encrypted snapshots, leased jobs and transactional source receipts: bounded cron workers resume after timeouts without replaying successful writes; payment candidates are planned across the whole job before linking (#2690).
 [2026-09-19] Provider imports never adopt parties by display name alone: use provider IDs or organization identity; unidentified invoice parties stay separate to avoid assigning invoices to another same-named entity (#2743).
-[2026-09-20] Connected companies create tax payments from selected upcoming Skattekonto events with one due date, net of synced balance. This includes preliminary tax and avoids duplicating obligation logic. Declaration-derived AGI/VAT files remain as fallback without a connection.
+[2026-09-20] Connected companies create one bank instruction per due date from selected upcoming Skattekonto debits at decided amounts. Saldo is informational, avoiding stale allocation across future tax dates. Declaration-derived AGI/VAT files remain fallback.

@@ -43,6 +43,14 @@ export interface BgLbOptions {
   periodLabel: string
 }
 
+export interface BgLbBankgiroPayment {
+  receiverBankgiro: string
+  ocr: string
+  amount: number
+  paymentDate: string
+  receiverName?: string
+}
+
 export interface BgLbResult {
   /** ISO 8859-1 ready text content with CRLF line endings. */
   content: string
@@ -190,22 +198,38 @@ export function generateBankgiroPaymentBgLb(
   },
   options: BgLbOptions
 ): BgLbResult {
+  return generateBankgiroPaymentsBgLb(
+    company,
+    [{ ...payment, paymentDate: options.paymentDate }],
+    { periodLabel: options.periodLabel },
+  )
+}
+
+/** Generate one LB file containing Bankgiro payments on one or more dates. */
+export function generateBankgiroPaymentsBgLb(
+  company: BgLbCompanyData,
+  payments: BgLbBankgiroPayment[],
+  options: { periodLabel: string },
+): BgLbResult {
   const senderBg = stripBgFormat(company.senderBankgiro)
-  const receiverBg = stripBgFormat(payment.receiverBankgiro)
   if (!/^\d{7,8}$/.test(senderBg)) {
     throw new Error(`Ogiltigt avsändar-bankgiro: ${company.senderBankgiro}`)
   }
-  if (!/^\d{7,8}$/.test(receiverBg)) {
-    throw new Error(`Ogiltigt mottagar-bankgiro: ${payment.receiverBankgiro}`)
-  }
-  const ocrDigits = payment.ocr.replace(/\D/g, '')
-  if (ocrDigits.length === 0 || ocrDigits.length > 25) {
-    throw new Error(`Ogiltigt OCR-nummer: ${payment.ocr}`)
+  if (payments.length === 0) {
+    throw new Error('Minst en betalning krävs')
   }
 
-  const paymentDateYyMmDd = toYyMmDd(options.paymentDate)
+  const firstPaymentDate = [...payments].sort((a, b) =>
+    a.paymentDate.localeCompare(b.paymentDate),
+  )[0].paymentDate
+  const paymentDateYyMmDd = toYyMmDd(firstPaymentDate)
   const todayYyMmDd = toYyMmDd(new Date().toISOString().slice(0, 10))
-  const amountOre = Math.round(payment.amount * 100)
+  const totalAmountOre = payments.reduce((sum, payment) => {
+    if (!Number.isFinite(payment.amount) || payment.amount <= 0) {
+      throw new Error(`Ogiltigt betalningsbelopp: ${payment.amount}`)
+    }
+    return sum + Math.round(payment.amount * 100)
+  }, 0)
 
   const records: string[] = []
 
@@ -228,14 +252,24 @@ export function generateBankgiroPaymentBgLb(
   // Pos 38-49: Amount in öre (12 digits)
   // Pos 50-55: Payment date YYMMDD
   // Pos 56-80: Receiver name / free info (25 chars)
-  records.push(
-    pad('14', 2) +
-      padNumber(receiverBg, 10) +
-      padNumber(ocrDigits, 25) +
-      padNumber(String(amountOre), 12) +
-      paymentDateYyMmDd +
-      padText(payment.receiverName ?? options.periodLabel, 25)
-  )
+  for (const payment of payments) {
+    const receiverBg = stripBgFormat(payment.receiverBankgiro)
+    if (!/^\d{7,8}$/.test(receiverBg)) {
+      throw new Error(`Ogiltigt mottagar-bankgiro: ${payment.receiverBankgiro}`)
+    }
+    const ocrDigits = payment.ocr.replace(/\D/g, '')
+    if (ocrDigits.length === 0 || ocrDigits.length > 25) {
+      throw new Error(`Ogiltigt OCR-nummer: ${payment.ocr}`)
+    }
+    records.push(
+      pad('14', 2) +
+        padNumber(receiverBg, 10) +
+        padNumber(ocrDigits, 25) +
+        padNumber(String(Math.round(payment.amount * 100)), 12) +
+        toYyMmDd(payment.paymentDate) +
+        padText(payment.receiverName ?? options.periodLabel, 25)
+    )
+  }
 
   // ─── Posttyp 29: Slutpost ───
   const totalRecords = records.length + 1
@@ -243,7 +277,7 @@ export function generateBankgiroPaymentBgLb(
     pad('29', 2) +
       padNumber(senderBg, 10) +
       padNumber(String(totalRecords), 8) +
-      padNumber(String(amountOre), 12) +
+      padNumber(String(totalAmountOre), 12) +
       pad('', 48)
   )
 
@@ -258,8 +292,8 @@ export function generateBankgiroPaymentBgLb(
   return {
     content: records.join('\r\n') + '\r\n',
     filename: `bg_lb_skatt_${options.periodLabel}.txt`,
-    totalAmount: payment.amount,
-    recordCount: 1,
+    totalAmount: totalAmountOre / 100,
+    recordCount: payments.length,
   }
 }
 

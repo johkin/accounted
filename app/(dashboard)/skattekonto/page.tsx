@@ -638,22 +638,11 @@ export default function SkattekontoPage() {
     const allRows = [...(tx?.upcoming ?? []), ...(tx?.overdue ?? []), ...(tx?.booked ?? [])]
     return allRows.filter((row) => activeSelectedIds.has(row.id))
   }, [activeSelectedIds, tx])
-  const selectedDueDates = new Set(
-    selectedRows.map((row) => row.forfallodatum ?? row.transaktionsdatum),
-  )
-  const selectedNet = selectedRows.reduce(
-    (sum, row) => sum + Number(row.belopp_skatteverket),
-    0,
-  )
   const selectionCanBePaid =
     selectedRows.length > 0 &&
-    selectedRows.every((row) => row.status === 'upcoming') &&
-    selectedDueDates.size === 1 &&
-    selectedNet < 0
-  const paymentSelectionHasMixedDates =
-    selectedRows.length > 0 &&
-    selectedRows.every((row) => row.status === 'upcoming') &&
-    selectedDueDates.size > 1
+    selectedRows.every(
+      (row) => row.status === 'upcoming' && Number(row.belopp_skatteverket) < 0,
+    )
   const range = useRangeSelect({ visibleIds: selectableIds, selectedIds, setSelectedIds })
   const toggleSelect = useCallback(
     (id: string, extend?: boolean) => range.toggle(id, extend),
@@ -665,17 +654,24 @@ export default function SkattekontoPage() {
     nextCharge && saldoNow !== null && saldoNow < nextCharge.amount
       ? Math.round((nextCharge.amount - saldoNow) * 100) / 100
       : null
-  const rowsForPayment = paymentSelection ?? nextCharge?.rows ?? []
+  const rowsForPayment = (paymentSelection ?? nextCharge?.rows ?? []).filter(
+    (row) => Number(row.belopp_skatteverket) < 0,
+  )
   const paymentDue = rowsForPayment[0]
     ? (rowsForPayment[0].forfallodatum ?? rowsForPayment[0].transaktionsdatum)
     : null
-  const paymentCharge = roundOre(Math.abs(rowsForPayment.reduce(
-    (sum, row) => sum + Number(row.belopp_skatteverket),
-    0,
-  )))
-  const paymentAmount = saldoNow === null
-    ? paymentCharge
-    : Math.max(0, roundOre(paymentCharge - saldoNow))
+  const paymentGroups = [...rowsForPayment.reduce((groups, row) => {
+    const dueDate = row.forfallodatum ?? row.transaktionsdatum
+    groups.set(
+      dueDate,
+      roundOre((groups.get(dueDate) ?? 0) + Math.abs(Number(row.belopp_skatteverket))),
+    )
+    return groups
+  }, new Map<string, number>()).entries()].sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
+  const paymentCharge = roundOre(paymentGroups.reduce((sum, [, amount]) => sum + amount, 0))
+  const paymentPeriod = paymentGroups.length > 1
+    ? `${paymentGroups[0][0]}_${paymentGroups[paymentGroups.length - 1][0]}`
+    : paymentDue
 
   const downloadPayment = async () => {
     if (downloadingPayment || rowsForPayment.length === 0) return
@@ -683,8 +679,8 @@ export default function SkattekontoPage() {
     try {
       const ids = rowsForPayment.map((row) => row.id).join(',')
       const filename = paymentFormat === 'pain001'
-        ? `pain001_skatt_${paymentDue}.xml`
-        : `bg_lb_skatt_${paymentDue}.txt`
+        ? `pain001_skatt_${paymentPeriod}.xml`
+        : `bg_lb_skatt_${paymentPeriod}.txt`
       const result = await downloadFile({
         url: `/api/skatteverket/tax-payments/payment-file?transaction_ids=${encodeURIComponent(ids)}&format=${paymentFormat}`,
         filename,
@@ -961,9 +957,6 @@ export default function SkattekontoPage() {
               {t('bulk_payment_cta', { count: activeSelectedIds.size })}
             </Button>
           )}
-          {paymentSelectionHasMixedDates && (
-            <span className="text-muted-foreground">{t('bulk_payment_same_due_hint')}</span>
-          )}
           <Button size="sm" onClick={() => void ignoreSelected([...activeSelectedIds])}>
             {t('bulk_ignore_cta', { count: activeSelectedIds.size })}
           </Button>
@@ -1068,8 +1061,7 @@ export default function SkattekontoPage() {
             {paymentDue && (
               <DialogDescription className="text-[13px] leading-relaxed">
                 {t('payment_description', {
-                  date: formatDateLong(paymentDue),
-                  charge: formatCurrency(paymentCharge),
+                  count: rowsForPayment.length,
                 })}
               </DialogDescription>
             )}
@@ -1095,10 +1087,12 @@ export default function SkattekontoPage() {
                 )}
               </dd>
             </div>
-            <div className="flex items-baseline justify-between gap-4">
-              <dt className="text-muted-foreground">{t('payment_selected_label')}</dt>
-              <dd className="tabular-nums">{formatCurrency(paymentCharge)}</dd>
-            </div>
+            {paymentGroups.map(([dueDate, amount]) => (
+              <div key={dueDate} className="flex items-baseline justify-between gap-4">
+                <dt className="text-muted-foreground">{formatDateLong(dueDate)}</dt>
+                <dd className="tabular-nums">{formatCurrency(amount)}</dd>
+              </div>
+            ))}
             {saldoNow !== null && (
               <div className="flex items-baseline justify-between gap-4">
                 <dt className="text-muted-foreground">{t('payment_balance_label')}</dt>
@@ -1106,8 +1100,8 @@ export default function SkattekontoPage() {
               </div>
             )}
             <div className="flex items-baseline justify-between gap-4">
-              <dt className="text-muted-foreground">{t('payment_shortfall_label')}</dt>
-              <dd className="font-medium tabular-nums">{formatCurrency(paymentAmount)}</dd>
+              <dt className="text-muted-foreground">{t('payment_total_label')}</dt>
+              <dd className="font-medium tabular-nums">{formatCurrency(paymentCharge)}</dd>
             </div>
             <div className="flex items-baseline justify-between gap-4">
               <dt className="text-muted-foreground">{t('payment_format_label')}</dt>
@@ -1127,7 +1121,7 @@ export default function SkattekontoPage() {
           <DialogFooter>
             <Button
               onClick={() => void downloadPayment()}
-              disabled={downloadingPayment || paymentAmount <= 0}
+              disabled={downloadingPayment || paymentCharge <= 0}
             >
               {downloadingPayment ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

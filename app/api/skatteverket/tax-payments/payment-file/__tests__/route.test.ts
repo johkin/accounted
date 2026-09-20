@@ -90,30 +90,30 @@ describe('GET /api/skatteverket/tax-payments/payment-file', () => {
     enqueue({ data: [row(ID_1, -10_000)], error: null })
     enqueue({ data: { name: 'Test AB', org_number: '5566778899', entity_type: 'aktiebolag' } })
     enqueue({ data: { bankgiro: '123-4567' } })
-    enqueue({ data: null, error: null })
 
     expect((await GET(request(), createMockRouteParams({}))).status).toBe(404)
   })
 
-  it('rejects rows with different due dates', async () => {
+  it('creates one payment per due date at the selected decided amounts', async () => {
     enqueue({ data: [row(ID_1, -10_000), row(ID_2, -5_000, '2026-11-12')], error: null })
     enqueue({ data: { name: 'Test AB', org_number: '5566778899', entity_type: 'aktiebolag' } })
     enqueue({ data: { bankgiro: '123-4567' } })
-    enqueue({ data: null, error: null })
 
     const response = await GET(request(), createMockRouteParams({}))
-    expect(response.status).toBe(400)
-    expect(JSON.stringify(await response.json())).toContain('samma förfallodag')
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Content-Disposition'))
+      .toContain('pain001_skatt_2026-10-12_2026-11-12.xml')
+    const [, payments] = generatePain001Mock.mock.calls[0]
+    expect(payments).toMatchObject([
+      { amount: 10_000, paymentDate: '2026-10-12' },
+      { amount: 5_000, paymentDate: '2026-11-12' },
+    ])
   })
 
-  it('creates one payment for the selected net charge minus the current balance', async () => {
+  it('groups debits with the same due date without subtracting the tax account balance', async () => {
     enqueue({ data: [row(ID_1, -10_000), row(ID_2, -5_000)], error: null })
     enqueue({ data: { name: 'Test AB', org_number: '5566778899', entity_type: 'aktiebolag' } })
     enqueue({ data: { bankgiro: '123-4567' } })
-    enqueue({
-      data: { value: { saldo: { saldoSkatteverket: 3_000 } } },
-      error: null,
-    })
 
     const response = await GET(request(), createMockRouteParams({}))
 
@@ -121,22 +121,21 @@ describe('GET /api/skatteverket/tax-payments/payment-file', () => {
     expect(response.headers.get('Content-Disposition')).toContain('pain001_skatt_2026-10-12.xml')
     const [, payments] = generatePain001Mock.mock.calls[0]
     expect(payments[0]).toMatchObject({
-      amount: 12_000,
+      amount: 15_000,
       paymentDate: '2026-10-12',
       reference: { type: 'ocr', value: '1655954700217' },
     })
   })
 
-  it('nets a selected credit on the same due date against the selected debits', async () => {
+  it('rejects selected credits', async () => {
     enqueue({ data: [row(ID_1, -10_000), row(ID_2, 2_000)], error: null })
     enqueue({ data: { name: 'Test AB', org_number: '5566778899', entity_type: 'aktiebolag' } })
     enqueue({ data: { bankgiro: '123-4567' } })
-    enqueue({ data: null, error: null })
 
     const response = await GET(request(), createMockRouteParams({}))
 
-    expect(response.status).toBe(200)
-    const [, payments] = generatePain001Mock.mock.calls[0]
-    expect(payments[0]).toMatchObject({ amount: 8_000 })
+    expect(response.status).toBe(400)
+    expect(JSON.stringify(await response.json())).toContain('debiteringar')
+    expect(generatePain001Mock).not.toHaveBeenCalled()
   })
 })

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
+import { createHash } from 'node:crypto'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
-import { generateBankgiroPaymentBgLb } from '@/lib/salary/payment/bg-lb-generator'
+import { generateBankgiroPaymentsBgLb } from '@/lib/salary/payment/bg-lb-generator'
 import { generateSupplierPain001 } from '@/lib/payments/pain001-supplier'
 import { resolveBatchDebtor } from '@/lib/payments/batch-service'
 import { resolveSkattekontoOcr, SKATTEKONTO_BANKGIRO } from '@/lib/skatteverket/skattekonto-ocr'
@@ -51,7 +52,7 @@ export const GET = withRouteContext(
       return errorResponse('INVALID_FORMAT', 'Ogiltigt filformat.', 'Invalid file format.', 400)
     }
 
-    const [{ data: rows, error: rowsError }, { data: company }, { data: settings }, snapshot] =
+    const [{ data: rows, error: rowsError }, { data: company }, { data: settings }] =
       await Promise.all([
         supabase
           .from('skattekonto_transactions')
@@ -68,13 +69,6 @@ export const GET = withRouteContext(
           .select('bankgiro')
           .eq('company_id', companyId)
           .single(),
-        supabase
-          .from('extension_data')
-          .select('value')
-          .eq('company_id', companyId)
-          .eq('extension_id', 'skatteverket')
-          .eq('key', 'skattekonto_balance_snapshot')
-          .maybeSingle(),
       ])
 
     if (rowsError) throw rowsError
@@ -87,57 +81,40 @@ export const GET = withRouteContext(
       )
     }
     const selected = rows as SelectedRow[]
-    if (selected.some((row) => row.status !== 'upcoming')) {
+    if (selected.some((row) => row.status !== 'upcoming' || Number(row.belopp_skatteverket) >= 0)) {
       return errorResponse(
         'TRANSACTION_NOT_PAYABLE',
-        'Endast kommande skattekontohändelser kan ingå i en betalning.',
-        'Only upcoming tax account events can be included in a payment.',
+        'Endast kommande debiteringar på skattekontot kan ingå i en betalning.',
+        'Only upcoming tax account debits can be included in a payment.',
         400,
       )
     }
 
-    const dueDates = new Set(selected.map((row) => row.forfallodatum ?? row.transaktionsdatum))
-    if (dueDates.size !== 1) {
-      return errorResponse(
-        'MIXED_DUE_DATES',
-        'Välj händelser med samma förfallodag.',
-        'Select events with the same due date.',
-        400,
+    const amountByDueDate = new Map<string, number>()
+    for (const row of selected) {
+      const dueDate = row.forfallodatum ?? row.transaktionsdatum
+      amountByDueDate.set(
+        dueDate,
+        roundOre((amountByDueDate.get(dueDate) ?? 0) + Math.abs(Number(row.belopp_skatteverket))),
       )
     }
-    const dueDate = [...dueDates][0]
-    const earliestExecutionDate = dueDate < todayIsoStockholm() ? todayIsoStockholm() : dueDate
-    const paymentDate = formatDateISO(adjustDeadlineToNextBankingDay(
-      new Date(`${earliestExecutionDate}T12:00:00Z`),
-    ))
-    const selectedNet = roundOre(selected.reduce(
-      (sum, row) => sum + Number(row.belopp_skatteverket),
-      0,
-    ))
-    if (selectedNet >= 0) {
-      return errorResponse(
-        'NO_SELECTED_CHARGE',
-        'De valda händelserna ger inget belopp att betala.',
-        'The selected events do not result in an amount to pay.',
-        400,
-      )
-    }
-    const charge = Math.abs(selectedNet)
-    const snapshotValue = snapshot.error ? null : (snapshot.data?.value as
-      | { saldo?: { saldoSkatteverket?: unknown } }
-      | null
-      | undefined)
-    const rawBalance = Number(snapshotValue?.saldo?.saldoSkatteverket)
-    const balance = snapshotValue && Number.isFinite(rawBalance) ? roundOre(rawBalance) : null
-    const amount = balance === null ? charge : Math.max(0, roundOre(charge - balance))
-    if (amount <= 0) {
-      return errorResponse(
-        'PAYMENT_ALREADY_FUNDED',
-        'Saldot på skattekontot täcker de valda händelserna.',
-        'The tax account balance covers the selected events.',
-        400,
-      )
-    }
+    const today = todayIsoStockholm()
+    const payments = [...amountByDueDate.entries()]
+      .sort(([dateA], [dateB]) => dateA.localeCompare(dateB))
+      .map(([dueDate, amount]) => {
+        const earliestExecutionDate = dueDate < today ? today : dueDate
+        return {
+          amount,
+          paymentDate: formatDateISO(adjustDeadlineToNextBankingDay(
+            new Date(`${earliestExecutionDate}T12:00:00Z`),
+          )),
+        }
+      })
+    const firstPaymentDate = payments[0].paymentDate
+    const lastPaymentDate = payments[payments.length - 1].paymentDate
+    const periodLabel = firstPaymentDate === lastPaymentDate
+      ? firstPaymentDate
+      : `${firstPaymentDate}_${lastPaymentDate}`
 
     if (!company?.org_number) {
       return errorResponse(
@@ -184,16 +161,19 @@ export const GET = withRouteContext(
             bankgiro: debtor.bankgiro,
             city: debtor.city,
           },
-          [{
+          payments.map((payment) => ({
             payee: { type: 'bankgiro', bankgiro: SKATTEKONTO_BANKGIRO.replace(/\D/g, '') },
             payeeName: 'Skatteverket',
             payeeCity: 'Solna',
-            amount,
-            paymentDate,
+            amount: payment.amount,
+            paymentDate: payment.paymentDate,
             reference: { type: 'ocr', value: ocr },
-          }],
+          })),
           {
-            messageId: `${getBranding().appName.toUpperCase()}-SKATT-${company.org_number.replace(/\D/g, '')}-${paymentDate}`,
+            messageId: `${getBranding().appName.toUpperCase()}-SKATT-${createHash('sha256')
+              .update([...ids].sort().join(','))
+              .digest('hex')
+              .slice(0, 12)}`,
             createdAt: new Date().toISOString(),
           },
         )
@@ -201,7 +181,7 @@ export const GET = withRouteContext(
       } catch (err) {
         return errorResponse('PAYMENT_FILE_ERROR', getErrorMessage(err), getErrorMessage(err), 400)
       }
-      filename = `pain001_skatt_${paymentDate}.xml`
+      filename = `pain001_skatt_${periodLabel}.xml`
       contentType = 'application/xml; charset=utf-8'
     } else {
       if (!settings?.bankgiro) {
@@ -221,15 +201,16 @@ export const GET = withRouteContext(
         )
       }
       try {
-        const result = generateBankgiroPaymentBgLb(
+        const result = generateBankgiroPaymentsBgLb(
           { name: company.name, senderBankgiro: settings.bankgiro },
-          {
+          payments.map((payment) => ({
             receiverBankgiro: SKATTEKONTO_BANKGIRO,
             ocr,
-            amount,
+            amount: payment.amount,
+            paymentDate: payment.paymentDate,
             receiverName: 'Skatteverket',
-          },
-          { paymentDate, periodLabel: paymentDate },
+          })),
+          { periodLabel },
         )
         fileContent = Buffer.from(result.content, 'latin1')
         filename = result.filename
