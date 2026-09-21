@@ -634,6 +634,8 @@ export default function SkattekontoPage() {
     const selectable = new Set(selectableIds)
     return new Set([...selectedIds].filter((id) => selectable.has(id)))
   }, [selectableIds, selectedIds])
+  const allSelectableSelected =
+    selectableIds.length > 0 && activeSelectedIds.size === selectableIds.length
   const selectedRows = useMemo(() => {
     const allRows = [...(tx?.upcoming ?? []), ...(tx?.overdue ?? []), ...(tx?.booked ?? [])]
     return allRows.filter((row) => activeSelectedIds.has(row.id))
@@ -939,49 +941,31 @@ export default function SkattekontoPage() {
       </section>
       )}
 
-      {/* Bulkbar (transactions-page pattern): hidden until at least one
-          ignorable row is selected via the hover checkboxes. */}
-      {activeSelectedIds.size > 0 && (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border px-1 py-2.5 text-[12.5px] animate-fade-in">
+      {/* Keep the bulk actions mounted whenever the table has selectable rows.
+          Selection only changes the controls' enabled state, never the page
+          geometry, so checking a row cannot push the table down. */}
+      {selectableIds.length > 0 && (
+        <div className="flex min-h-12 flex-wrap items-center gap-2 border-b border-border px-1 py-2 text-[12.5px]">
           <span className="whitespace-nowrap">
             {t('bulk_selected', { count: activeSelectedIds.size })}
           </span>
-          {selectionCanBePaid && (
-            <Button
-              size="sm"
-              onClick={() => {
-                setPaymentSelection(selectedRows)
-                setShowPayment(true)
-              }}
-            >
-              {t('bulk_payment_cta', { count: activeSelectedIds.size })}
-            </Button>
-          )}
-          <Button size="sm" onClick={() => void ignoreSelected([...activeSelectedIds])}>
-            {t('bulk_ignore_cta', { count: activeSelectedIds.size })}
-          </Button>
-          {activeSelectedIds.size < selectableIds.length && (
-            <button
-              type="button"
-              className={QUIET_LINK_CLASS}
-              onClick={() => {
-                setSelectedIds(new Set(selectableIds))
-                range.resetAnchor()
-              }}
-            >
-              {t('bulk_select_all', { count: selectableIds.length })}
-            </button>
-          )}
-          <button
-            type="button"
-            className={QUIET_LINK_CLASS}
+          <Button
+            size="sm"
+            disabled={!selectionCanBePaid}
             onClick={() => {
-              setSelectedIds(new Set())
-              range.resetAnchor()
+              setPaymentSelection(selectedRows)
+              setShowPayment(true)
             }}
           >
-            {t('bulk_clear')}
-          </button>
+            {t('bulk_payment_cta', { count: activeSelectedIds.size })}
+          </Button>
+          <Button
+            size="sm"
+            disabled={activeSelectedIds.size === 0}
+            onClick={() => void ignoreSelected([...activeSelectedIds])}
+          >
+            {t('bulk_ignore_cta', { count: activeSelectedIds.size })}
+          </Button>
         </div>
       )}
 
@@ -990,6 +974,12 @@ export default function SkattekontoPage() {
         tx={tx}
         showIgnored={showIgnored}
         selectedIds={activeSelectedIds}
+        selectableCount={selectableIds.length}
+        allSelectableSelected={allSelectableSelected}
+        onToggleSelectAll={() => {
+          setSelectedIds(allSelectableSelected ? new Set() : new Set(selectableIds))
+          range.resetAnchor()
+        }}
         onToggleSelect={toggleSelect}
         onBokfor={bokfor}
         onMatch={openMatch}
@@ -1160,6 +1150,9 @@ function SkattekontoTable({
   tx,
   showIgnored,
   selectedIds,
+  selectableCount,
+  allSelectableSelected,
+  onToggleSelectAll,
   onToggleSelect,
   onBokfor,
   onMatch,
@@ -1169,6 +1162,9 @@ function SkattekontoTable({
   tx: TransaktionerEnvelope['data'] | null
   showIgnored: boolean
   selectedIds: Set<string>
+  selectableCount: number
+  allSelectableSelected: boolean
+  onToggleSelectAll: () => void
   onToggleSelect: (id: string, extend?: boolean) => void
   onBokfor: (id: string) => void
   onMatch: (row: StoredSkattekontoTransaction) => void
@@ -1176,6 +1172,7 @@ function SkattekontoTable({
   onUnignore: (row: StoredSkattekontoTransaction) => void
 }) {
   const t = useTranslations('skattekonto')
+  const hasSelection = selectedIds.size > 0
 
   const allSections: TableSection[] = [
     { key: 'upcoming', label: t('band_upcoming'), rows: tx?.upcoming ?? [] },
@@ -1212,18 +1209,26 @@ function SkattekontoTable({
   }
 
   return (
-    // Negative margin + matching padding: lets the hover-revealed selection
-    // checkbox hang into the page margins without being clipped by the
-    // overflow container (transactions-page pattern).
     <div
-      className="-mx-5 overflow-x-auto px-5 md:-mx-8 md:px-8"
+      className="overflow-x-auto"
       role="region"
       aria-label="Skattekontohändelser"
     >
       <table className="w-full border-collapse text-[13px]">
         <thead>
           <tr>
-            <th className={cn(TH_CLASS, 'w-0 !p-0')} aria-hidden="true"></th>
+            <th className={cn(TH_CLASS, 'w-[26px] !px-1')}>
+              <Checkbox
+                checked={allSelectableSelected ? true : hasSelection ? 'indeterminate' : false}
+                onCheckedChange={onToggleSelectAll}
+                aria-label={
+                  allSelectableSelected
+                    ? t('bulk_clear')
+                    : t('bulk_select_all', { count: selectableCount })
+                }
+                className="border-foreground"
+              />
+            </th>
             <th className={cn(TH_CLASS, 'w-[110px]')}>Datum</th>
             <th className={TH_CLASS}>Händelse</th>
             <th className={cn(TH_CLASS, 'text-right')}>Belopp</th>
@@ -1234,8 +1239,9 @@ function SkattekontoTable({
           {sections.map((section) => (
             <Fragment key={section.key}>
               <tr className="bg-muted/30">
+                <td className="w-[26px] !px-1" aria-hidden="true" />
                 <td
-                  colSpan={5}
+                  colSpan={4}
                   className="px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground"
                 >
                   {section.label}
@@ -1306,10 +1312,9 @@ function SkattekontoRow({
         isSelected && 'bg-secondary/40',
       )}
     >
-      {/* Hover-revealed selection checkbox (transactions-page pattern):
-          zero-width cell, the checkbox hangs in the left page margin so the
-          date column stays where it was. Selected rows keep it visible. */}
-      <td className={cn(TD_CLASS, 'relative w-0 !p-0 select-none')}>
+      {/* Selection is a real first table column. Keeping its width in the
+          header, bands and every row prevents the date column from moving. */}
+      <td className={cn(TD_CLASS, 'w-[26px] !px-1 py-[9px] select-none')}>
         {selectable && (
           <Checkbox
             checked={isSelected}
@@ -1319,7 +1324,7 @@ function SkattekontoRow({
             onCheckedChange={() => onToggleSelect(row.id, shiftHeld.current)}
             aria-label={t('select_row_aria', { text: row.transaktionstext })}
             className={cn(
-              'absolute -left-5 top-1/2 -translate-y-1/2 border-foreground duration-150 md:-left-6',
+              'border-foreground duration-150',
               isSelected ? 'opacity-100' : CHECKBOX_REVEAL_CLASS,
             )}
           />
