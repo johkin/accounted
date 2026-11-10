@@ -25,6 +25,16 @@ For internal Anthropic API usage (the SDK is called from `lib/ai/provider.ts` an
 
 ## Where things live
 
+`accounted_create_self_billed_invoice` (legacy `gnubok_create_self_billed_invoice`)
+stages a received self-billing invoice your customer issued on your behalf.
+Provide `customer_id`, `external_invoice_number`, `invoice_date`, `received_date`,
+`due_date`, `currency` and `items`; `self_billing_agreement_ref` and `notes` are
+optional. Approval requires high-risk confirmation and uses the shared received-sale
+service: accrual accounting books on registration, cash accounting on payment.
+It never allocates an F-number or sends email. This is a sale, not a supplier bill.
+Find it through `accounted_search_tools` with `query: "självfaktura"`; it is
+search-only and can be invoked through `accounted_stage_tool` or `tools/call`.
+
 - `server.ts`: the tools array + JSON-RPC dispatcher
 - `tool-result.ts`: `withNext()`, `toToolError()` response helpers
 - `resources/`: read-only `Accounted://` URIs, registered in `resources/index.ts`: `company/current`, `period/active`, `recent-activity`, `capabilities`, `attention`, `chart-of-accounts`, `settings/vat-treatments`, `booking-templates`, `ledger/context`, `reconciliation/summary`

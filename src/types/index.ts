@@ -2604,6 +2604,7 @@ export type PendingOperationType =
   | 'update_account'
   | 'create_supplier'
   | 'create_invoice'
+  | 'create_self_billed_invoice'
   | 'mark_invoice_paid'
   | 'send_invoice'
   | 'mark_invoice_sent'

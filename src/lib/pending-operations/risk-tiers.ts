@@ -183,6 +183,7 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   // entry is created or modified.
   link_supplier_invoice_voucher: 'medium',
   create_invoice: 'medium', // creates as draft; sending is a separate op
+  create_self_billed_invoice: 'high', // registration can post an immutable sale
   // Rewrites a DRAFT in place (header + full item replace). Same tier as
   // create_invoice: the target has no verifikat yet (isEditableInvoiceDraft
   // is re-checked at commit), so the edit is fully reversible by editing again.

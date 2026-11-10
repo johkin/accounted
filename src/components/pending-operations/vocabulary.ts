@@ -83,6 +83,7 @@ export const OPERATION_LABEL_KEYS: Record<string, string> = {
   create_supplier_payment_batch: 'type_create_supplier_payment_batch',
   cancel_supplier_payment_batch: 'type_cancel_supplier_payment_batch',
   book_invoice: 'type_book_invoice',
+  create_self_billed_invoice: 'type_create_self_billed_invoice',
   bulk_book_invoices: 'type_bulk_book_invoices',
   book_supplier_invoice: 'type_book_supplier_invoice',
   create_expense_claim: 'type_create_expense_claim',
@@ -179,6 +180,7 @@ export function operationLabel(operationType: string, t: (key: string) => string
 // one line; the dialog shows it in full. Order roughly low → high risk so
 // reviewers scanning the source see the destructive paths grouped together.
 export const singleActionWarnings: Record<string, string> = {
+  create_self_billed_invoice: 'Godkännandet registrerar självfakturan som försäljning med kundens fakturanummer. Med faktureringsmetoden bokförs ett verifikat som bara kan rättas med storno. Med kontantmetoden bokförs försäljningen vid betalning.',
   // Low/medium risk: light verifikation work
   create_transaction: 'Genom att klicka godkänn så skapar du en transaktion.',
   create_customer: 'Genom att klicka godkänn så skapar du en kund.',

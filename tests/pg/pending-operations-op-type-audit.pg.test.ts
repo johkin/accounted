@@ -51,6 +51,21 @@ describe('pending_operations operation_type CHECK audit', () => {
     companyId = seeded.companyId
   })
 
+  it('accepts a staged received self-billing sale', async () => {
+    const client = await getPool().connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(
+        `INSERT INTO public.pending_operations (user_id, company_id, operation_type, title, risk_level)
+         VALUES ($1, $2, 'create_self_billed_invoice', 'Registrera mottagen självfaktura', 'high')`,
+        [userId, companyId],
+      )
+    } finally {
+      await client.query('ROLLBACK')
+      client.release()
+    }
+  })
+
   it('extraction still matches the staging call sites', () => {
     const { types, callSites } = extractStagedOpTypes()
     // 44 call sites / 43 distinct types as of 2026-07-03. The floor is a

@@ -198,8 +198,10 @@ import {
   skatteverketAgiValidateIndividuppgift,
 } from './skatteverket-helpers'
 import type { AnyOperation } from './types'
+import { selfBilledInvoicesCreate } from './self-billed-invoices'
 
 export const OPERATIONS: readonly AnyOperation[] = [
+  selfBilledInvoicesCreate,
   // dimensions
   dimensionsList,
   dimensionsCreate,

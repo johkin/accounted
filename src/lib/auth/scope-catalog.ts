@@ -377,6 +377,7 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_create_supplier_payment_batch: 'suppliers:write',
   gnubok_cancel_supplier_payment_batch: 'suppliers:write',
   gnubok_book_invoice: 'invoices:write',
+  gnubok_create_self_billed_invoice: 'invoices:write',
   gnubok_bulk_book_invoices: 'invoices:write',
   gnubok_book_supplier_invoice: 'suppliers:write',
   gnubok_list_expense_claims: 'suppliers:read',

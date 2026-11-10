@@ -934,6 +934,7 @@
     "type_create_supplier_payment_batch": "Create supplier payment file",
     "type_cancel_supplier_payment_batch": "Cancel supplier payment file",
     "type_book_invoice": "Book customer invoice",
+    "type_create_self_billed_invoice": "Register received self-billing invoice",
     "type_bulk_book_invoices": "Book customer invoices",
     "type_book_supplier_invoice": "Book supplier invoice",
     "type_create_expense_claim": "Register expense claim",

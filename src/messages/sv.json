@@ -934,6 +934,7 @@
     "type_create_supplier_payment_batch": "Skapa betalfil för leverantörsfakturor",
     "type_cancel_supplier_payment_batch": "Makulera betalfil",
     "type_book_invoice": "Bokför kundfaktura",
+    "type_create_self_billed_invoice": "Registrera mottagen självfaktura",
     "type_bulk_book_invoices": "Bokför kundfakturor",
     "type_book_supplier_invoice": "Bokför leverantörsfaktura",
     "type_create_expense_claim": "Registrera utlägg",
